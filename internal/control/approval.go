@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/permission"
@@ -28,16 +27,6 @@ func (c *Controller) approveChecked(id string, allow, session, persist bool) err
 	}
 	if pending := c.approval.peek(id); pending.reply != nil && pending.kind == writeAccessKind {
 		return c.ResolveApproval(id, allow, scopeFromApprove(allow, session, persist))
-	}
-	c.mu.Lock()
-	gate := c.recoveryGate
-	c.mu.Unlock()
-	if gate != nil && gate.HasApproval(id) {
-		action := agent.RecoveryActionRevise
-		if allow {
-			action = agent.RecoveryActionContinue
-		}
-		return c.ResolveRecovery(id, action, "")
 	}
 	pending, ok, err := c.approval.resolveAfter(id, func(p pendingApproval) error {
 		return c.emitTurnEventChecked(event.Event{Kind: event.PromptAnswered, ItemID: id, Status: event.TurnInProgress})
@@ -331,7 +320,7 @@ func (a *approvalManager) registerDecisionWithInput(tool, subject, reason string
 }
 
 // registerDecisionKind is registerDecision with optional Kind/Recovery payload
-// so Auto Guard cards survive ReplayPendingPrompts.
+// so ordinary permission and plan prompts survive ReplayPendingPrompts.
 func (a *approvalManager) registerDecisionKind(tool, subject, reason string, fresh, requireHuman bool, kind string, rec *event.RecoveryApproval) (string, chan approvalReply) {
 	return a.registerDecisionKindWithInput(tool, subject, reason, nil, fresh, requireHuman, kind, rec)
 }

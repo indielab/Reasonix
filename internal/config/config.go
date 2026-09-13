@@ -1254,8 +1254,8 @@ type AgentConfig struct {
 	VisionModel         string  `toml:"vision_model"`
 	GuardianModel       string  `toml:"guardian_model"`
 	GuardianTemperature float64 `toml:"guardian_temperature"`
-	// RecoveryModel names the optional recovery reviewer. Empty leaves
-	// rule-only recovery; it is not implied by guardian or the main model.
+	// RecoveryModel is decoded from old configurations for compatibility. The
+	// Auto Guard reviewer is retired, so runtime and renderers ignore it.
 	RecoveryModel string `toml:"recovery_model"`
 	// RecoveryTemperature is accepted from older configs but ignored. Auto
 	// Guard review is deterministic at temperature zero.
@@ -1313,7 +1313,7 @@ type AgentConfig struct {
 	// PlanModeReadOnlyCommands is retained for old config/session round trips. Main
 	// Plan bash calls now use the ordinary Permissions classifier and Sandbox.
 	PlanModeReadOnlyCommands []string `toml:"plan_mode_read_only_commands"`
-	LegacyAnchorSafetyGate   bool     `toml:"legacy_anchor_safety_gate"`  // user-global rollback to the full-read guard
+	LegacyAnchorSafetyGate   bool     `toml:"legacy_anchor_safety_gate"`  // retired; decoded for compatibility and ignored
 	CompletionValidation     string   `toml:"completion_validation"`      // retired; retained for old config reads
 	CompletionEvaluatorModel string   `toml:"completion_evaluator_model"` // retired; ignored
 }

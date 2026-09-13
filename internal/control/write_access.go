@@ -303,16 +303,6 @@ func (c *Controller) resolveApprovalLocked(id string, allow bool, scope sandbox.
 	if allow && scope == sandbox.ApprovalScopeProject {
 		return fmt.Errorf("permanent approval is no longer supported; allow once or for this session")
 	}
-	c.mu.Lock()
-	gate := c.recoveryGate
-	c.mu.Unlock()
-	if gate != nil && gate.HasApproval(id) {
-		action := agent.RecoveryActionRevise
-		if allow {
-			action = agent.RecoveryActionContinue
-		}
-		return c.resolveRecoveryLocked(id, action, "")
-	}
 	pending := c.approval.peek(id)
 	if pending.reply == nil {
 		return nil

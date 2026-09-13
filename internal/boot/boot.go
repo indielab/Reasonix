@@ -56,7 +56,6 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/productdocs"
 	"reasonix/internal/provider"
-	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
 	"reasonix/internal/sessioncontext"
@@ -1277,10 +1276,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		if subReg.Len() == 0 {
 			return "", fmt.Errorf("read_only_skill: skill %q has no read-only tools available", sk.Name)
 		}
-		switch sk.Name {
-		case "review", "security-review", "security_review":
-			agent.AttachReviewReportTool(subReg)
-		}
 		steps := maxSteps
 		if steps > 0 {
 			if steps /= 2; steps < 5 {
@@ -1299,7 +1294,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		// Review gates consume typed, host-verifiable reports so a review
 		// cannot end in unverifiable prose. Review skills run only for
 		// mid/high-risk work under the standard policy.
-		runOptions.RequireReviewReportKind = agent.ReviewReportKindForSkill(sk.Name)
+		runOptions.RequireReviewReportKind = ""
 		// Provider serializers decide whether these images are wire-visible from
 		// the child model's own vision capability. Text-only children retain the
 		// attachment metadata locally but never receive image parts on the wire.
@@ -1353,11 +1348,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		// registry stop matching on continue_from (schema-hash check reports
 		// the mismatch).
 		subReg, childWriteRoots := skillSubagentRegistry(sk, reg, childDepth, maxSubagentDepth, capRuntime, writeRootSet)
-		// Voluntary review subagents report their findings in structured form.
-		switch sk.Name {
-		case "review", "security-review", "security_review":
-			agent.AttachReviewReportTool(subReg)
-		}
 		continueFrom := strings.TrimSpace(runOpts.ContinueFrom)
 		legacyForkFrom := strings.TrimSpace(runOpts.ForkFrom)
 		if continueFrom != "" && legacyForkFrom != "" {
@@ -1418,7 +1408,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		// Review gates consume typed, host-verifiable reports so a review
 		// cannot end in unverifiable prose. Review skills run only for
 		// mid/high-risk work under the standard policy.
-		runOptions.RequireReviewReportKind = agent.ReviewReportKindForSkill(sk.Name)
+		runOptions.RequireReviewReportKind = ""
 		var answer string
 		// The child provider owns the final vision decision, as in read-only runs.
 		childCtx := agent.WithUserImages(sctx, agent.SubagentImageCandidates(sctx))
@@ -1703,7 +1693,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		KeepPolicy:                   keepPolicy,
 		ReasoningLanguage:            config.ReasoningLanguageForEntry(entry, cfg.ReasoningLanguage()),
 		PlanModeReadOnlyCommands:     cfg.Agent.PlanModeReadOnlyCommands,
-		LegacyAnchorSafetyGate:       cfg.Agent.LegacyAnchorSafetyGate,
 		SubagentDepth:                0,
 		MaxSubagentDepth:             maxSubagentDepth,
 		MissingReasoningWarnStateDir: config.MissingReasoningWarnStateDir(),
@@ -1888,35 +1877,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		ctrlOpts.Guardian = guardian.NewSession(pProv, guardianReg, guardian.PolicyPrompt(), modelRefFromEntry(ge), cfg.Agent.GuardianTemperature, ge.Price, sink)
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("guardian enabled · model=%s", ge.Model)})
 	}
-	// Recovery reviewer is explicit: empty recovery_model leaves rule-only
-	// recovery. A configured but unusable model is a configuration error.
-	if recoveryModel := strings.TrimSpace(cfg.Agent.RecoveryModel); recoveryModel != "" {
-		if extensionResolver != nil && providerext.PluginRefOwner(recoveryModel) != "" {
-			re, ok := resolveOptionalEntry(extensionResolver, cfg, recoveryModel)
-			if !ok {
-				return nil, fmt.Errorf("recovery_model %q is not a configured provider", recoveryModel)
-			}
-			rProv, err := extensionResolver.Resolve(provider.Selection{Ref: modelRefFromEntry(re)})
-			if err != nil {
-				return nil, fmt.Errorf("recovery_model %q: %w", recoveryModel, err)
-			}
-			ctrlOpts.RecoveryReviewer = recovery.NewSessionWithSink(rProv, re.Price, modelRefFromEntry(re), sink)
-		} else {
-			re, ok := cfg.ResolveModel(recoveryModel)
-			if !ok {
-				return nil, fmt.Errorf("recovery_model %q is not a configured provider", recoveryModel)
-			}
-			rProv, err := NewProviderWithProxy(re, proxySpec)
-			if err != nil {
-				return nil, fmt.Errorf("recovery_model %q: %w", recoveryModel, err)
-			}
-			ctrlOpts.RecoveryReviewer = recovery.NewSessionWithSink(rProv, re.Price, modelRefFromEntry(re), sink)
-		}
-	}
-	// HeadlessApprovalMode is an explicit declaration that this frontend has
-	// no decision channel (`reasonix run`). ApprovalTimeout is not a proxy for
-	// that capability: bots have a bounded timeout and can still answer cards.
-	ctrlOpts.RecoveryHeadless = recoveryHeadlessMode(opts)
 	// Goal evaluator is not implied by the main model, guardian, or recovery
 	// reviewer. Controllers that want one inject it explicitly; otherwise Goal
 	// uses the deterministic host policy.
@@ -1928,13 +1888,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// ride ctrl.Ask, exactly as if the hub had been built after control.New.
 	ctrlRef.Store(ctrl)
 	close(controllerReady)
-	// Share the recovery checkpoint with task/fleet sub-agents so background
-	// writers observe the same failure state as the root agent.
-	if taskTool != nil {
-		if g := ctrl.Executor(); g != nil {
-			taskTool.WithRecoveryGate(g.RecoveryGate())
-		}
-	}
 	if capRuntime != nil {
 		ctrl.SetCapabilityProxyTools(capRuntime.ConnectedProxyTools)
 	}

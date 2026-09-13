@@ -52,7 +52,6 @@ import (
 	"reasonix/internal/permissionpreset"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
-	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/sessioncontext"
 	"reasonix/internal/sessioninbox"
@@ -69,10 +68,8 @@ import (
 // while one is already active in the same Controller.
 var ErrTurnRunning = errors.New("turn already running")
 
-// ErrNoFinalReadinessRecovery means an explicit continuation did not match the
-// immediately preceding paused readiness check (for example, an old card after
-// a newer user turn). It must not silently become an ordinary turn.
-var ErrNoFinalReadinessRecovery = errors.New("no pending final-readiness check to continue")
+// ErrNoFinalReadinessRecovery is retained for old recovery-action clients.
+var ErrNoFinalReadinessRecovery = errors.New("final_readiness_recovery_retired: readiness recovery actions can no longer restore evidence or replay checks")
 
 // ErrRuntimeDraining reports that a caller targeted a controller generation
 // superseded by a successful rebuild.
@@ -105,10 +102,6 @@ type Controller struct {
 	executor           *agent.Agent
 	guardianSess       *guardian.Session // nil when guardian is disabled
 	guardianPath       string            // persisted guardian session file ("" when disabled)
-	// recoveryGate is the shared Auto Guard state for this controller.
-	// nil when the feature is not wired for this controller.
-	recoveryGate *recovery.Gate
-
 	// taskBudget is the configured spend gate, as passed at construction.
 	taskBudget agent.TaskBudget
 	// goalTokenBudget bounds an unattended Goal loop; 0 leaves it unbounded.
@@ -481,11 +474,8 @@ type Options struct {
 	Runner   agent.Runner
 	Executor *agent.Agent
 	Guardian *guardian.Session
-	// RecoveryReviewer is the optional independent recovery reviewer (nil =
-	// rule-only path with fail-closed human confirmation for ambiguous cases).
-	RecoveryReviewer recovery.Reviewer
-	// RecoveryHeadless blocks mutations that need confirmation instead of
-	// waiting forever when no human decision channel exists.
+	// RecoveryHeadless is decoded for source compatibility and ignored. Auto
+	// Guard cannot be re-enabled through Controller options.
 	RecoveryHeadless bool
 	// TaskBudget is the configured spend gate; unset leaves a turn unbounded.
 	TaskBudget agent.TaskBudget
@@ -796,9 +786,6 @@ func New(opts Options) *Controller {
 		c.wireMutationObserver()
 		c.executor.SetMemoryQueue(c)
 	}
-	// Auto Guard is built into Auto. Ask and YOLO bypass it through the mode
-	// provider, so no separate enablement state is needed.
-	c.initRecoveryGate(opts.RecoveryReviewer, opts.RecoveryHeadless)
 	// Task monitoring: record background-job lifecycle into the project-local
 	// task store so CLI, Desktop, scripts, and future clients observe the same
 	// state/event evidence. The recorder swallows its own failures — monitoring
@@ -4986,6 +4973,9 @@ func (c *Controller) InheritLifecycleFrom(prev *Controller) {
 	if prev == nil {
 		return
 	}
+	if c.workspaceRoot == prev.workspaceRoot && c.executor != nil {
+		c.executor.InheritFileObservationsFrom(prev.executor)
+	}
 	prev.mu.Lock()
 	started := prev.startedOnce
 	turn := prev.turn
@@ -5202,20 +5192,6 @@ func (c *Controller) applyToolApprovalModeLocked(mode string) []string {
 		c.promptResolveMu.Unlock()
 		return nil
 	}
-	// Capture mode-change recovery dismissals before approval drain so a
-	// same-value hydrate/reconcile never rotates Episode state, while a real
-	// preset switch clears temporary failure/reviewer locks and waiters
-	// without auto-approving the original mutation.
-	var recoveryDismissed []string
-	c.mu.Lock()
-	gate := c.recoveryGate
-	c.mu.Unlock()
-	if gate != nil {
-		if ctrl, ok := any(gate).(agent.RecoveryEpisodeControl); ok {
-			// Do not hold controller/approval locks while rotating the gate.
-			recoveryDismissed = ctrl.OnModeChange(mode)
-		}
-	}
 	c.permissionStateMu.Lock()
 	pending := c.approval.setMode(mode)
 	if c.subagentGate != nil {
@@ -5226,18 +5202,6 @@ func (c *Controller) applyToolApprovalModeLocked(mode string) []string {
 	// new mode. promptResolveMu makes this one transaction with approval commit.
 	c.permissionRevision.Add(1)
 	c.permissionStateMu.Unlock()
-	// Clear recovery cards dismissed by the mode switch outside the gate lock.
-	for _, id := range recoveryDismissed {
-		p := c.approval.resolve(id)
-		if p.reply != nil {
-			// Do not approve the pending mutation; signal cancel/deny so legacy
-			// paths drop the card.
-			select {
-			case p.reply <- approvalReply{allow: false}:
-			default:
-			}
-		}
-	}
 	drained := make([]string, 0, len(pending))
 	for _, p := range pending {
 		p.reply <- approvalReply{allow: true}
